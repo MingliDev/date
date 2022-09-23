@@ -92,6 +92,10 @@
 #  define TARGET_OS_SIMULATOR 0
 #endif
 
+#ifdef __ANDROID__
+#include "JavaCallbacks.hpp"
+#endif
+
 #if USE_OS_TZDB
 #  include <dirent.h>
 #endif
@@ -141,7 +145,7 @@
 #  endif  // HAS_REMOTE_API
 #else   // !_WIN32
 #  include <unistd.h>
-#  if !USE_OS_TZDB && !defined(INSTALL)
+#  if !USE_OS_TZDB && !defined(INSTALL) && !defined(__APPLE__) && !defined(__ANDROID__)
 #    include <wordexp.h>
 #  endif
 #  include <limits.h>
@@ -274,6 +278,8 @@ expand_path(std::string path)
 {
 #      if TARGET_OS_IPHONE
     return date::iOSUtils::get_tzdata_path();
+#    elif __ANDROID__
+    return mingli::JavaCallbacks::getTzDataPath();
 #      else  // !TARGET_OS_IPHONE
     ::wordexp_t w{};
     std::unique_ptr<::wordexp_t, void(*)(::wordexp_t*)> hold{&w, ::wordfree};
@@ -4030,6 +4036,11 @@ tzdb::current_zone() const
         std::string result = date::iOSUtils::get_current_timezone();
         if (!result.empty())
             return locate_zone(result);
+#elif __ANDROID__
+        // Get system timezone on Android
+        if (__ANDROID__ != 0) {
+            return locate_zone(mingli::JavaCallbacks::getDefaultTimeZoneId());
+        }
 #endif
     // Fall through to try other means.
     }
