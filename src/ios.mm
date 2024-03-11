@@ -242,7 +242,10 @@ namespace date
 
             // create read stream
             std::ifstream is(tarPath.c_str(), std::ifstream::in | std::ifstream::binary);
-
+#if TAR_DEBUG
+            size_t debugSize = 0;
+            int debugCount = 0;
+#endif
             // process files
             while (location < tarSize)
             {
@@ -259,14 +262,19 @@ namespace date
                     case '\0':  //
                     {
                         std::string obj = getTarObject(is, info.blocksContentSize);
-#if TAR_DEBUG
-                        size += info.realContentSize;
-                        printf("#%i %s file size %lld written total %ld from %lld\n", ++count,
-                               info.objName.c_str(), info.realContentSize, size, tarSize);
-#endif
+                        
                         writeFile(tzdataPath, info.objName, obj, info.realContentSize);
                         location += info.blocksContentSize;
-
+#if TAR_DEBUG
+                        debugSize += info.realContentSize;
+                        printf("#%i '%s' file size %ld written total %ld from %lld (ramaining %lld)\n",
+                               ++debugCount,
+                               info.objName.c_str(),
+                               info.realContentSize,
+                               debugSize,
+                               tarSize,
+                               tarSize - debugSize);
+#endif
                         break;
                     }
                 }
