@@ -596,17 +596,34 @@ parse3(std::istream& in)
 }
 
 static
-unsigned
-parse_month(std::istream& in)
+std::string
+parse_until_whitespace(std::istream& in)
 {
-    CONSTDATA char*const month_names[] =
-        {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    auto s = parse3(in);
-    auto m = std::find(std::begin(month_names), std::end(month_names), s) - month_names;
-    if (m >= std::end(month_names) - std::begin(month_names))
+    std::string result;
+    char ch;
+    while (in.peek() != EOF && std::isspace(static_cast<unsigned char>(in.peek())))
+        in.get();
+    while (in.peek() != EOF && in.get(ch) && !std::isspace(static_cast<unsigned char>(ch)))
+        result += ch;
+    return result;
+}
+
+static
+unsigned
+parse_month(std::istream& in) // !!!: quick fix https://github.com/HowardHinnant/date/issues/836#issuecomment-2334702331
+{
+    CONSTDATA char* const month_names[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"
+    };
+    std::string s = parse_until_whitespace(in);
+    auto it = std::find(std::begin(month_names), std::end(month_names), s);
+    auto index = it - std::begin(month_names);
+    if (it == std::end(month_names))
         throw std::runtime_error("oops: bad month name: " + s);
-    return static_cast<unsigned>(++m);
+    return static_cast<unsigned>((index % 12) + 1);
 }
 
 #if !USE_OS_TZDB
