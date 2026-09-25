@@ -31,7 +31,6 @@
 #include <fstream>
 #include <zlib.h>
 #include <sys/stat.h>
-#include <functional>
 
 #ifndef TAR_DEBUG
 #  define TAR_DEBUG 0
@@ -52,20 +51,22 @@ namespace date
 {
     namespace iOSUtils
     {
+
         struct TarInfo
         {
-            char type;
-            std::string name;
-            std::string content;
-            long contentSize;
+            char objType;
+            std::string objName;
+            size_t realContentSize; // writable size without padding zeroes
+            size_t blocksContentSize; // adjusted size to 512 bytes blocks
+            bool success;
         };
 
         std::string convertCFStringRefPathToCStringPath(CFStringRef ref);
         bool extractTzdata(CFURLRef homeUrl, CFURLRef archiveUrl, std::string destPath);
-        bool dxTarRead(const void* tarData,
-                       const long tarSize,
-                       std::function<void (const TarInfo &)> const &callback);
-        bool writeFile(const std::string &tzdataPath, const TarInfo &tarInfo);
+        TarInfo getTarObjectInfo(std::ifstream &readStream);
+        std::string getTarObject(std::ifstream &readStream, int64_t size);
+        bool writeFile(const std::string &tzdataPath, const std::string &fileName,
+                       const std::string &data, size_t realContentSize);
 
         std::string
         get_current_timezone()
@@ -226,95 +227,105 @@ namespace date
 
             // ======== extract files =========
 
+            uint64_t location = 0; // Position in the file
+
             // get file size
             struct stat stat_buf;
             int res = stat(tarPath.c_str(), &stat_buf);
-            
             if (res != 0)
             {
                 printf("error file size\n");
                 remove(tarPath.c_str());
                 return false;
             }
-            
-            auto tarSize = stat_buf.st_size;
-            
+            int64_t tarSize = stat_buf.st_size;
+
+            // create read stream
             std::ifstream is(tarPath.c_str(), std::ifstream::in | std::ifstream::binary);
-            std::string tarBuffer((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
-#if TAR_DEBUG
-            int count = 0;
-            
-            printf("Extracting and writing tzdata files:\n");
-#endif
-            dxTarRead(tarBuffer.c_str(), tarSize, [&](const TarInfo &tarInfo) {
-#if TAR_DEBUG
-                printf("%d '%s' %ld bytes\n", ++count, tarInfo.name.c_str(), tarInfo.contentSize);
-#endif
-                switch (tarInfo.type) {
+
+            // process files
+            while (location < tarSize)
+            {
+                TarInfo info = getTarObjectInfo(is);
+
+                if (!info.success || info.realContentSize == 0)
+                {
+                    break; // something wrong or all files are read
+                }
+
+                switch (info.objType)
+                {
                     case '0':   // file
                     case '\0':  //
                     {
-                        writeFile(tzdataPath, tarInfo);
+                        std::string obj = getTarObject(is, info.blocksContentSize);
+#if TAR_DEBUG
+                        size += info.realContentSize;
+                        printf("#%i %s file size %lld written total %ld from %lld\n", ++count,
+                               info.objName.c_str(), info.realContentSize, size, tarSize);
+#endif
+                        writeFile(tzdataPath, info.objName, obj, info.realContentSize);
+                        location += info.blocksContentSize;
+
                         break;
                     }
                 }
-            });
+            }
 
             remove(tarPath.c_str());
 
             return true;
         }
-        
-        /**
-         Based on https://github.com/DeXP/dxTarRead/blob/f5c9654137db609d8a584dfa75c652f4c9843f21/dxTarRead.c#L12
-         See also https://habr.com/ru/articles/320834/
-         */
-        bool dxTarRead(const void* tarData, const long tarSize,
-                       std::function<void (const TarInfo &)> const &callback)
+
+        TarInfo
+        getTarObjectInfo(std::ifstream &readStream)
         {
-            const int NAME_OFFSET = 0, SIZE_OFFSET = 124, MAGIC_OFFSET = 257, TYPE_OFFSET = 124;
-            const int BLOCK_SIZE = 512, SZ_SIZE = 12, MAGIC_SIZE = 5;
-            const char MAGIC[] = "ustar"; /* Modern GNU tar's magic const */
-            const char* tar = (const char*) tarData; /* From "void*" to "char*" */
-            long size, mul, i, p = 0, newOffset = 0;
+            int64_t length = TAR_BLOCK_SIZE;
+            char buffer[length];
+            char type;
+            char name[TAR_NAME_SIZE + 1];
+            char sizeBuf[TAR_SIZE_SIZE + 1];
 
-            do { /* "Load" data from tar - just point to passed memory*/
-                const char* name = tar + NAME_OFFSET + p + newOffset;
-                const char* sz = tar + SIZE_OFFSET + p + newOffset; /* size string */
-                const char type = (tar + TYPE_OFFSET + p + newOffset)[0];
-                
-                p += newOffset; /* pointer to current file's data in TAR */
+            readStream.read(buffer, length);
 
-                for(i=0; i<MAGIC_SIZE; i++) /* Check for supported TAR version */
-                    if( tar[i + MAGIC_OFFSET + p] != MAGIC[i] ) return false; /* = NULL */
+            memcpy(&type, &buffer[TAR_TYPE_POSITION], 1);
 
-                size = 0; /* Convert file size from string into integer */
-                for(i=SZ_SIZE-2, mul=1; i>=0; mul*=8, i--) /* Octal str to int */
-                    if( (sz[i]>='0') && (sz[i] <= '9') ) size += (sz[i] - '0') * mul;
+            memset(&name, '\0', TAR_NAME_SIZE + 1);
+            memcpy(&name, &buffer[TAR_NAME_POSITION], TAR_NAME_SIZE);
 
-                /* Offset size in bytes. Depends on file size and TAR's block size */
-                newOffset = (1 + size/BLOCK_SIZE) * BLOCK_SIZE; /* trim by block */
-                if( (size % BLOCK_SIZE) > 0 ) newOffset += BLOCK_SIZE;
-                
-                auto content = tar + p + BLOCK_SIZE;
-                TarInfo tarInfo = {type, name, content, size};
-                
-                callback(tarInfo);
-            } while(p + newOffset + BLOCK_SIZE <= tarSize);
-            
-            return true;
+            memset(&sizeBuf, '\0', TAR_SIZE_SIZE + 1);
+            memcpy(&sizeBuf, &buffer[TAR_SIZE_POSITION], TAR_SIZE_SIZE);
+            size_t realSize = strtol(sizeBuf, NULL, 8);
+            size_t blocksSize = realSize + (TAR_BLOCK_SIZE - (realSize % TAR_BLOCK_SIZE));
+
+            return {type, std::string(name), realSize, blocksSize, true};
         }
-        
-        bool
-        writeFile(const std::string &tzdataPath, const TarInfo &tarInfo)
+
+        std::string
+        getTarObject(std::ifstream &readStream, int64_t size)
         {
-            std::ofstream os(tzdataPath + "/" + tarInfo.name, std::ofstream::out | std::ofstream::binary);
+            char buffer[size];
+            readStream.read(buffer, size);
+            return std::string(buffer);
+        }
+
+        bool
+        writeFile(const std::string &tzdataPath, const std::string &fileName, const std::string &data,
+                  size_t realContentSize)
+        {
+            std::ofstream os(tzdataPath + "/" + fileName, std::ofstream::out | std::ofstream::binary);
 
             if (!os) {
                 return false;
             }
 
-            os.write(tarInfo.content.c_str(), tarInfo.contentSize);
+            // trim empty space
+            char trimmedData[realContentSize + 1];
+            memset(&trimmedData, '\0', realContentSize);
+            memcpy(&trimmedData, data.c_str(), realContentSize);
+
+            // write
+            os.write(trimmedData, realContentSize);
             os.close();
 
             return true;

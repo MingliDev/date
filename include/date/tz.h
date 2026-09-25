@@ -54,7 +54,7 @@
 #    else
 #      define HAS_REMOTE_API 1
 #    endif
-#  else  // HAS_REMOTE_API makes no since when using the OS timezone database
+#  else  // HAS_REMOTE_API makes no sense when using the OS timezone database
 #    define HAS_REMOTE_API 0
 #  endif
 #endif
@@ -231,8 +231,8 @@ nonexistent_local_time::make_msg(local_time<Duration> tp, const local_info& i)
        << i.first.abbrev << " and\n"
        << local_seconds{i.second.begin.time_since_epoch()} + i.second.offset << ' '
        << i.second.abbrev
-       << " which are both equivalent to\n"
-       << i.first.end << " UTC";
+       << " which are both equivalent to\n";
+    date::operator<<(os, i.first.end) << " UTC";
     return os.str();
 }
 
